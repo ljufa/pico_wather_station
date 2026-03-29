@@ -174,9 +174,6 @@ impl Ili9488Display {
         self.end_pixels();
     }
 
-    pub fn set_brightness(&mut self, level: u8) {
-        self.write_command_with_data(0x51, &[level]);
-    }
 
     pub fn set_inverted(&mut self, inverted: bool) {
         if inverted {
@@ -283,21 +280,6 @@ impl DrawTarget for Ili9488Display {
 
 pub type Display = Ili9488Display;
 
-
-#[derive(Deserialize)]
-pub struct OutdoorSensorReadings {
-    pub location: String<16>,
-    pub temperature1: f32,
-    pub temperature2: f32,
-    pub humidity: f32,
-    pub pressure: u32,
-}
-
-#[derive(Deserialize)]
-pub struct OpenWatherReadings {
-    pub temp: f32,
-    pub city_name: String<30>,
-}
 
 #[derive(Deserialize, Clone)]
 pub struct HourForecast {

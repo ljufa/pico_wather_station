@@ -1,12 +1,11 @@
+#[cfg(not(feature = "debug"))]
+use crate::log_noop::{error, info};
 use core::str::from_utf8;
 #[cfg(feature = "debug")]
 use defmt::{error, info};
-#[cfg(not(feature = "debug"))]
-use crate::log_noop::{error, info};
 use embassy_net::dns::DnsSocket;
 use embassy_net::tcp::client::{TcpClient, TcpClientState};
 use embassy_net::Stack;
-
 
 use embassy_rp::clocks::RoscRng;
 use embassy_time::Duration;
@@ -17,14 +16,28 @@ use reqwless::request::{Method, RequestBuilder};
 #[cfg(feature = "debug")]
 use {defmt_rtt as _, panic_probe as _};
 
+const USER: &str = env!("GEOIP_USER");
+const PASS: &str = env!("GEOIP_PASS");
 
+macro_rules! url {
+    ($path:literal) => {{
+        const URL: &str = concat!(env!("GEOIP_API_URL"), $path);
+        URL
+    }};
+}
 
+pub async fn datetime_request<'a>(stack: Stack<'static>, rx_buffer: &'a mut [u8; 2400]) -> &'a str {
+    make_api_request(stack, rx_buffer, url!("/datetime")).await
+}
 
+pub async fn forecast_request<'a>(stack: Stack<'static>, rx_buffer: &'a mut [u8; 2400]) -> &'a str {
+    make_api_request(stack, rx_buffer, url!("/weather/forecast")).await
+}
 
 pub async fn make_api_request<'a>(
     stack: Stack<'static>,
     rx_buffer: &'a mut [u8; 2400],
-    url: &'a str,
+    url: &str,
 ) -> &'a str {
     let client_state = TcpClientState::<1, 1024, 1024>::new();
     let mut tcp_client = TcpClient::new(stack, &client_state);
@@ -36,7 +49,12 @@ pub async fn make_api_request<'a>(
     // Generate random seed
     let seed = rng.next_u64();
 
-    let tls_config = TlsConfig::new(seed, &mut tls_read_buffer, &mut tls_write_buffer, TlsVerify::None);
+    let tls_config = TlsConfig::new(
+        seed,
+        &mut tls_read_buffer,
+        &mut tls_write_buffer,
+        TlsVerify::None,
+    );
 
     let mut http_client = HttpClient::new_with_tls(&tcp_client, &dns_client, tls_config);
     info!("connecting to {}", &url);
@@ -45,8 +63,10 @@ pub async fn make_api_request<'a>(
         return "";
     };
 
-    let mut request = req_handle
-        .content_type(reqwless::headers::ContentType::TextPlain);
+    let mut request = req_handle.content_type(reqwless::headers::ContentType::TextPlain);
+    if !USER.is_empty() && !PASS.is_empty() {
+        request = request.basic_auth(USER, PASS);
+    }
     let response_fut = request.send(rx_buffer);
 
     let Ok(response) = response_fut.await else {
@@ -54,6 +74,7 @@ pub async fn make_api_request<'a>(
         return "";
     };
 
+    info!("Response status: {:?}", response.status);
     let body = match from_utf8(response.body().read_to_end().await.unwrap()) {
         Ok(b) => b,
         Err(_e) => {

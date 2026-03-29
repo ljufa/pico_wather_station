@@ -1,6 +1,6 @@
 [env]
-CARGO_TARGET_DIR = "/dev/shm/cargo_target"
-
+# CARGO_TARGET_DIR = "/dev/shm/cargo_target"
+CARGO_TARGET_DIR = "target"
 [tasks.check]
 description = "Check the code for errors"
 command = "cargo"

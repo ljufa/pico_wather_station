@@ -65,6 +65,7 @@ const FORCE_NIGHT: Option<bool> = None;
 const BRIGHTNESS_DAY: u16 = env_u16(env!("BRIGHTNESS_DAY"));
 const BRIGHTNESS_NIGHT: u16 = env_u16(env!("BRIGHTNESS_NIGHT"));
 const NIGHT_START: u8 = env_u8(env!("NIGHT_START"));
+const REDUCED_BRIGHTNESS_START: u8 = env_u8(env!("REDUCED_BRIGHTNESS_START"));
 const NIGHT_END: u8 = env_u8(env!("NIGHT_END"));
 
 const fn env_u16(s: &str) -> u16 {
@@ -175,9 +176,6 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
-    let mut dns: Vec<Ipv4Address, 3> = Vec::new();
-    let _ = dns.push(Ipv4Address::new(192, 168, 5, 20));
-    let _ = dns.push(Ipv4Address::new(8, 8, 8, 8));
     let mut dhcp_config = embassy_net::DhcpConfig::default();
     dhcp_config.ignore_naks = true;
     let config = Config::dhcpv4(dhcp_config);
@@ -230,9 +228,7 @@ async fn display_task(
 ) {
     // Fetch initial datetime
     let mut rx_buffer = [0; 2400];
-    let body =
-        webapi::make_api_request(stack, &mut rx_buffer, concat!(env!("GEOIP_API_URL"), "/datetime"))
-            .await;
+    let body = webapi::datetime_request(stack, &mut rx_buffer).await;
     if let Ok(now) = serde_json_core::de::from_str::<InitialDateTime>(body) {
         _ = rtc.set_datetime(DateTime {
             year: now.0.year,
@@ -252,6 +248,7 @@ async fn display_task(
     let mut prev_minute: u8 = 255;
     let mut prev_day: u8 = 255;
     let mut weather_drawn = false;
+    let mut prev_hour: u8 = 255;
 
     loop {
         let forecast = WEATHER_FORECAST.lock(|d| d.borrow().clone());
@@ -263,11 +260,30 @@ async fn display_task(
         let day = date_time.as_ref().map(|dt| dt.day).unwrap_or(0);
         let night = FORCE_NIGHT.unwrap_or(!(NIGHT_END..NIGHT_START).contains(&hour));
 
+        // Sync time at 04:00 daily
+        if hour == 4 && minute == 0 && hour != prev_hour {
+            info!("Syncing time at 04:00...");
+            let mut rx_buffer = [0; 2400];
+            let body = webapi::datetime_request(stack, &mut rx_buffer).await;
+            if let Ok(now) = serde_json_core::de::from_str::<InitialDateTime>(body) {
+                _ = rtc.set_datetime(DateTime {
+                    year: now.0.year,
+                    month: now.0.month,
+                    day: now.0.day,
+                    day_of_week: DayOfWeek::Monday,
+                    hour: now.0.hour,
+                    minute: now.0.minute,
+                    second: now.0.second,
+                });
+                info!("Time synced!");
+            }
+        }
+        prev_hour = hour;
+        let reduced_brightness = night && (hour as u8) < NIGHT_END || (hour as u8) >= REDUCED_BRIGHTNESS_START;
+
         // Handle night/day transition
-        let late_night = night && hour < NIGHT_END;
-        if Some(night) != prev_night || Some(late_night) != prev_late_night {
-            let brightness = if night { BRIGHTNESS_NIGHT } else { BRIGHTNESS_DAY };
-            let brightness = if late_night { brightness.saturating_sub(10) } else { brightness };
+        if Some(night) != prev_night || Some(reduced_brightness) != prev_late_night {
+            let brightness = if reduced_brightness { BRIGHTNESS_NIGHT } else { BRIGHTNESS_DAY };
             let mut pwm_config = pwm::Config::default();
             pwm_config.top = 32768;
             pwm_config.compare_b = (32768u32 * brightness as u32 / 100) as u16;
@@ -275,7 +291,7 @@ async fn display_task(
             backlight.set_config(&pwm_config);
             display.set_inverted(night);
             prev_night = Some(night);
-            prev_late_night = Some(late_night);
+            prev_late_night = Some(reduced_brightness);
             weather_drawn = false;
         }
 
@@ -312,12 +328,7 @@ async fn display_task(
 async fn weather_forecast_task(stack: Stack<'static>) {
     loop {
         let mut rx_buffer = [0; 2400];
-        let body = webapi::make_api_request(
-            stack,
-            &mut rx_buffer,
-            concat!(env!("GEOIP_API_URL"), "/weather/forecast"),
-        )
-        .await;
+        let body = webapi::forecast_request(stack, &mut rx_buffer).await;
         match serde_json_core::de::from_str::<WeatherForecast>(body) {
             Ok(forecast) => {
                 WEATHER_FORECAST.lock(|d| d.replace(forecast.0));
